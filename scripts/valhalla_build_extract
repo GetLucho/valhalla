@@ -372,23 +372,29 @@ def get_tar_info(name: str, size: int) -> tarfile.TarInfo:
 
 def write_index_to_tar(tar_fp_: Path):
     """Loop through all tiles and write the correct index.bin file to the tar"""
-    # get the offset and size from the tarred tile members
-    index: List[Tuple[int, int, int]] = list()
+    # get the offset and size from the tarred tile members, packed as we go:
+    # a planet extract has millions of them and the packed index is a lot
+    # smaller than a Python object per entry
+    index = bytearray()
     with tarfile.open(tar_fp_, "r|") as tar:
-        for member in tar.getmembers():
+        for member in tar:
             if member.name.endswith(".gph"):
                 LOGGER.debug(
                     f"Tile {member.name} with offset: {member.offset_data}, size: {member.size}"
                 )
 
-                index.append((member.offset_data, get_tile_id(member.name), member.size))
+                index += struct.pack(
+                    INDEX_BIN_FORMAT, member.offset_data, get_tile_id(member.name), member.size
+                )
+
+            # tarfile remembers every member it hands out, even when streaming
+            tar.members.clear()
 
     # write back the actual index info
     with open(tar_fp_, "r+b") as tar:
         # jump to the data block, index.bin is the first file
         tar.seek(BLOCKSIZE)
-        for entry in index:
-            tar.write(struct.pack(INDEX_BIN_FORMAT, *entry))
+        tar.write(index)
 
 
 def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolver, extract_fp: Path):
