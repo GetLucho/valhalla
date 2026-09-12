@@ -117,10 +117,12 @@ class TileResolver:
         if self._tar_obj:
             self._tar_obj.close()
 
-    def add_to_tar(self, tar: tarfile.TarFile):
+    def add_to_tar(self, tar: tarfile.TarFile) -> bytearray:
         """
-        Adds the self.matched_paths to the passed tar file.
+        Adds the self.matched_paths to the passed tar file and returns the
+        index.bin entries describing where they ended up.
         """
+        index = bytearray()
         # deduplicate the list (geojson variant might've added dups)
         # since 3.7 python dicts are insertion-ordered, so order is preserved
         for t in dict.fromkeys(self.matched_paths):
@@ -133,8 +135,11 @@ class TileResolver:
             else:
                 tar.add(str(self.path.joinpath(normalized_path)), arcname=normalized_path)
 
+            index += pack_index_entry(tar, tar.members[-1])
             # tarfile keeps a TarInfo for every member it writes, which nothing reads back
             tar.members.clear()
+
+        return index
 
 
 description = "Builds a tar extract from the tiles in mjolnir.tile_dir to the path specified in mjolnir.tile_extract."
@@ -403,27 +408,23 @@ def get_tar_info(name: str, size: int) -> tarfile.TarInfo:
     return tarinfo
 
 
-def write_index_to_tar(tar_fp_: Path):
-    """Loop through all tiles and write the correct index.bin file to the tar"""
-    # get the offset and size from the tarred tile members, packed as we go:
-    # a planet extract has millions of them and the packed index is a lot
-    # smaller than a Python object per entry
-    index = bytearray()
-    with tarfile.open(tar_fp_, "r|") as tar:
-        for member in tar:
-            if member.name.endswith(".gph"):
-                LOGGER.debug(
-                    f"Tile {member.name} with offset: {member.offset_data}, size: {member.size}"
-                )
+def pack_index_entry(tar: tarfile.TarFile, member: tarfile.TarInfo) -> bytes:
+    """
+    Packs the index.bin entry for the member the tar was just handed. The tar's
+    offset sits right behind that member's data blocks, which is what the data's
+    own offset is counted back from.
+    """
+    blocks, remainder = divmod(member.size, BLOCKSIZE)
+    if remainder:
+        blocks += 1
+    offset_data = tar.offset - blocks * BLOCKSIZE
+    LOGGER.debug(f"Tile {member.name} with offset: {offset_data}, size: {member.size}")
 
-                index += struct.pack(
-                    INDEX_BIN_FORMAT, member.offset_data, get_tile_id(member.name), member.size
-                )
+    return struct.pack(INDEX_BIN_FORMAT, offset_data, get_tile_id(member.name), member.size)
 
-            # tarfile remembers every member it hands out, even when streaming
-            tar.members.clear()
 
-    # write back the actual index info
+def write_index_to_tar(tar_fp_: Path, index: bytes):
+    """Writes the collected index entries to the tar's index.bin"""
     with open(tar_fp_, "r+b") as tar:
         # jump to the data block, index.bin is the first file
         tar.seek(BLOCKSIZE)
@@ -446,9 +447,9 @@ def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolve
     extract_fp.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(extract_fp, "w") as tar:
         tar.addfile(get_tar_info(INDEX_FILE, index_size), index_fd)
-        tile_resolver_.add_to_tar(tar)
+        index = tile_resolver_.add_to_tar(tar)
 
-    write_index_to_tar(extract_fp)
+    write_index_to_tar(extract_fp, index)
 
     LOGGER.info(f"Finished tarring {tiles_count} tiles to {extract_fp}")
 
@@ -477,6 +478,7 @@ def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolve
 
         # loop over all routing tiles and create fixed-size traffic tiles
         # based on the directed edge count
+        traffic_index = bytearray()
         for tile_in in tar_in:
             # this runs once per tile in the extract, and both tarfiles hold on to
             # every member they have read or written
@@ -510,12 +512,13 @@ def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolve
                 get_tar_info(tile_in.name, len(header_bytes) + traffic_size),
                 BytesIO(header_bytes + b"\0" * traffic_size),
             )
+            traffic_index += pack_index_entry(tar_traffic, tar_traffic.members[-1])
 
             LOGGER.debug(
                 f"Traffic tile {tile_in.name} has {tile_header.directededgecount_} directed edges"
             )
 
-    write_index_to_tar(traffic_fp)
+    write_index_to_tar(traffic_fp, traffic_index)
 
     LOGGER.info(f"Finished creating the traffic extract at {traffic_fp}")
 
