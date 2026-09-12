@@ -7,6 +7,7 @@ from io import BytesIO
 import json
 from math import floor
 import logging
+import os
 from pathlib import Path
 import struct
 import sys
@@ -108,8 +109,15 @@ class TileResolver:
                 m.name for m in self._tar_obj.getmembers() if m.name.endswith(".gph")
             )
         else:
+            # walked rather than rglob'ed: rglob holds on to every path it has
+            # yielded until the walk is over, which is a second object per tile
+            tile_dir = str(self.path)
+            prefix_len = len(os.path.join(tile_dir, ""))
             self.normalized_tile_paths = sorted(
-                str(p.relative_to(self.path)) for p in self.path.rglob("*.gph")
+                os.path.join(dir_path, file_name)[prefix_len:]
+                for dir_path, _, file_names in os.walk(tile_dir)
+                for file_name in file_names
+                if file_name.endswith(".gph")
             )
 
     def __del__(self):
