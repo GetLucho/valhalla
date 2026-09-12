@@ -68,17 +68,19 @@ class TileResolver:
         self._is_tar = path.is_file()
         self._tar_obj: Optional[tarfile.TarFile] = tarfile.open(self.path, "r") if self._is_tar else None
 
-        self.normalized_tile_paths: List[Path] = list()
-        self.matched_paths: List[Path] = list()
+        # tile paths are kept as plain strings: a planet extract has millions of
+        # them and a Path costs an order of magnitude more than the name itself
+        self.normalized_tile_paths: List[str] = list()
+        self.matched_paths: List[str] = list()
 
         # pre-populate the available paths
         if self._is_tar:
             self.normalized_tile_paths = sorted(
-                [Path(m.name) for m in self._tar_obj.getmembers() if m.name.endswith(".gph")]
+                m.name for m in self._tar_obj.getmembers() if m.name.endswith(".gph")
             )
         else:
             self.normalized_tile_paths = sorted(
-                p.relative_to(self.path) for p in self.path.rglob("*.gph")
+                str(p.relative_to(self.path)) for p in self.path.rglob("*.gph")
             )
 
     def __del__(self):
