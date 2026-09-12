@@ -57,6 +57,35 @@ class TileHeader(ctypes.Structure):
     ]
 
 
+class IndexPlaceholder:
+    """
+    Read-only file object yielding the bytes index.bin is created with. The real
+    offsets are only known once the tiles are written, so the tar gets a
+    placeholder of the right size first; on a planet extract that's tens of
+    megabytes, so it's produced in whatever chunks the writer asks for.
+    """
+
+    def __init__(self, size: int):
+        self.size = size
+        self.pos = 0
+
+    def read(self, size: int = -1) -> bytes:
+        remaining = self.size - self.pos
+        if size < 0 or size > remaining:
+            size = remaining
+        self.pos += size
+
+        return b"0" * size
+
+    def seek(self, pos: int) -> int:
+        self.pos = pos
+
+        return pos
+
+    def close(self):
+        self.pos = self.size
+
+
 class TileResolver:
     def __init__(self, path: Path):
         """
@@ -408,10 +437,9 @@ def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolve
         LOGGER.critical(f"Couldn't find usable tiles in {tile_resolver_.path}")
         sys.exit(1)
 
-    # write the in-memory index file
+    # reserve the room the index file needs, it's filled in once the tiles are written
     index_size = INDEX_BIN_SIZE * tiles_count
-    index_fd = BytesIO(b"0" * index_size)
-    index_fd.seek(0)
+    index_fd = IndexPlaceholder(index_size)
 
     # first add the index file, then the sorted tiles to the tarfile
     # TODO: come up with a smarter strategy to cluster the tiles in the tar
