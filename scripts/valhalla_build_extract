@@ -94,16 +94,18 @@ class TileResolver:
         """
         # deduplicate the list (geojson variant might've added dups)
         # since 3.7 python dicts are insertion-ordered, so order is preserved
-        for t in list(dict.fromkeys(self.matched_paths)):
+        for t in dict.fromkeys(self.matched_paths):
             LOGGER.debug(f"Adding tile {t} to the tar file")
             # Normalize path to use forward slashes, fixes issues when running on Windows
             normalized_path = str(t).replace("\\", "/")
             if self._is_tar:
                 tar_member = self._tar_obj.getmember(normalized_path)
-                tar.addfile(tar_member, self._tar_obj.extractfile(tar_member.name))
+                tar.addfile(tar_member, self._tar_obj.extractfile(tar_member))
             else:
                 tar.add(str(self.path.joinpath(normalized_path)), arcname=normalized_path)
-                tar_member = tar.getmember(normalized_path)
+
+            # tarfile keeps a TarInfo for every member it writes, which nothing reads back
+            tar.members.clear()
 
 
 description = "Builds a tar extract from the tiles in mjolnir.tile_dir to the path specified in mjolnir.tile_extract."
@@ -447,7 +449,11 @@ def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolve
 
         # loop over all routing tiles and create fixed-size traffic tiles
         # based on the directed edge count
-        for tile_in in tar_in.getmembers():
+        for tile_in in tar_in:
+            # this runs once per tile in the extract, and both tarfiles hold on to
+            # every member they have read or written
+            tar_in.members.clear()
+            tar_traffic.members.clear()
             if not tile_in.name.endswith(".gph"):
                 continue
             # jump to the data's offset and skip the uninteresting bytes
