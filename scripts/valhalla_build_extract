@@ -144,8 +144,11 @@ class TileResolver:
                 tar.add(str(self.path.joinpath(normalized_path)), arcname=normalized_path)
 
             index += pack_index_entry(tar, tar.members[-1])
-            # tarfile keeps a TarInfo for every member it writes, which nothing reads back
+            # tarfile keeps a TarInfo for every member it writes, plus an inode for
+            # every file it stats so a repeat can be stored as a hardlink entry; an
+            # extract needs the tile's bytes in every member, so neither is any use
             tar.members.clear()
+            tar.inodes.clear()
 
         return index
 
