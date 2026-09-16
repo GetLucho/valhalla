@@ -162,11 +162,14 @@ public:
       if (fd == -1) {
         throw std::runtime_error(new_file_name + "(open): " + strerror(errno));
       }
-      if (posix_fallocate(fd, 0, target_size) != 0) {
-        // filesystem cannot reserve; leave it sparse as before
-        [[maybe_unused]] auto rc = ftruncate(fd, target_size);
-      }
+      const int reserved = posix_fallocate(fd, 0, target_size);
       close(fd);
+      if (reserved != 0) {
+        // filesystem cannot reserve: fall back to the original sparse file
+        std::ofstream f(new_file_name, std::ios::binary | std::ios::out | std::ios::trunc);
+        f.seekp(new_count * sizeof(T) - 1);
+        f.write("\0", 1);
+      }
 #endif
     }
     // map it
