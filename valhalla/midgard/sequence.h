@@ -151,11 +151,23 @@ public:
     decltype(stat::st_size) target_size = new_count * sizeof(T);
     struct stat s;
     if (stat(new_file_name.c_str(), &s) || s.st_size != target_size) {
-      // open, create and truncate the file
+#if defined(_WIN32)
       std::ofstream f(new_file_name, std::ios::binary | std::ios::out | std::ios::trunc);
-      // seek to the new size and put a null char
       f.seekp(new_count * sizeof(T) - 1);
       f.write("\0", 1);
+#else
+      // reserve the blocks now, so the extents are laid out once against the
+      // final size rather than per fault in whichever order writers arrive
+      auto fd = open(new_file_name.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+      if (fd == -1) {
+        throw std::runtime_error(new_file_name + "(open): " + strerror(errno));
+      }
+      if (posix_fallocate(fd, 0, target_size) != 0) {
+        // filesystem cannot reserve; leave it sparse as before
+        [[maybe_unused]] auto rc = ftruncate(fd, target_size);
+      }
+      close(fd);
+#endif
     }
     // map it
     map(new_file_name, new_count, advice);
@@ -351,9 +363,12 @@ public:
         threads.emplace_back([this, &predicate, buffer_size, &next_chunk, chunk_count]() {
           for (size_t chunk = next_chunk++; chunk < chunk_count; chunk = next_chunk++) {
             const size_t begin = chunk * buffer_size;
-            std::sort(static_cast<T*>(memmap) + begin,
-                      static_cast<T*>(memmap) + std::min(memmap.size(), begin + buffer_size),
-                      predicate);
+            const size_t end = std::min(memmap.size(), begin + buffer_size);
+            // pull the chunk in as one sequential run; sorting it in place
+            // faults pages in quicksort order, which readahead cannot follow
+            posix_madvise(static_cast<T*>(memmap) + begin, (end - begin) * sizeof(T),
+                          POSIX_MADV_WILLNEED);
+            std::sort(static_cast<T*>(memmap) + begin, static_cast<T*>(memmap) + end, predicate);
           }
         });
       }
