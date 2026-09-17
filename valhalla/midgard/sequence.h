@@ -383,9 +383,12 @@ public:
         threads.emplace_back([this, &predicate, buffer_size, &next_chunk, chunk_count]() {
           for (size_t chunk = next_chunk++; chunk < chunk_count; chunk = next_chunk++) {
             const size_t begin = chunk * buffer_size;
-            std::sort(static_cast<T*>(memmap) + begin,
-                      static_cast<T*>(memmap) + std::min(memmap.size(), begin + buffer_size),
-                      predicate);
+            const size_t end = std::min(memmap.size(), begin + buffer_size);
+            // pull the chunk in as one sequential run; sorting it in place
+            // faults pages in quicksort order, which readahead cannot follow
+            posix_madvise(static_cast<T*>(memmap) + begin, (end - begin) * sizeof(T),
+                          POSIX_MADV_WILLNEED);
+            std::sort(static_cast<T*>(memmap) + begin, static_cast<T*>(memmap) + end, predicate);
           }
         });
       }
